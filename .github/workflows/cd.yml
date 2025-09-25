@@ -37,13 +37,17 @@ jobs:
           POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
         run: |
           PARAM_FILE="./bicep/params/env.${{ inputs.target_env }}.parameters.json"
-          az deployment group create -g ${{ secrets[format('RESOURCE_GROUP_{0}', inputs.target_env | upper)] }} \
+          az deployment group create \
+            -g ${{ secrets[format('RESOURCE_GROUP_{0}', inputs.target_env | upper)] }} \
             --template-file ./bicep/main.bicep \
             --parameters @$PARAM_FILE \
             --parameters postgresAdminPassword=$POSTGRES_ADMIN_PASSWORD
 
       - name: Update container app image to promoted tag
+        env:
+          RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
         run: |
-          az containerapp update --name ecauth-${{ inputs.target_env }}-auth-app \
-            --resource-group ${{ secrets[format('RESOURCE_GROUP_{0}', inputs.target_env | upper)] }} \
+          az containerapp update \
+            --name ecauth-${{ inputs.target_env }}-auth-app \
+            --resource-group $RESOURCE_GROUP \
             --image ${{ env.ACR_IMAGE }}:${{ inputs.image_tag }}
