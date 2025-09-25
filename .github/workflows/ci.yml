@@ -1,0 +1,88 @@
+name: CI - Build, Test, Push, Deploy Dev
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP_DEV }}
+  LOCATION: ${{ secrets.LOCATION }}
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  ACR_IMAGE: ${{ secrets.ACR_IMAGE }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.set-tag.outputs.IMAGE_TAG }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore & Build
+        run: |
+          dotnet restore ./src/AuthServer/AuthServer.csproj
+          dotnet build -c Release ./src/AuthServer/AuthServer.csproj
+
+      - name: Run tests
+        run: dotnet test ./src --no-restore --verbosity normal
+
+      - name: Set image tag
+        id: set-tag
+        run: echo "IMAGE_TAG=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Login to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_APP_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          oidc: true
+
+      - name: ACR login
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build & Push image to ACR
+        run: |
+          IMAGE_TAG=${{ steps.set-tag.outputs.IMAGE_TAG }}
+          docker build -t ${{ env.ACR_IMAGE }}:${IMAGE_TAG} -f ./src/AuthServer/Dockerfile ./src/AuthServer
+          docker push ${{ env.ACR_IMAGE }}:${IMAGE_TAG}
+          docker tag ${{ env.ACR_IMAGE }}:${IMAGE_TAG} ${{ env.ACR_IMAGE }}:latest
+          docker push ${{ env.ACR_IMAGE }}:latest
+
+  deploy-dev:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_APP_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          oidc: true
+
+      - name: Deploy Bicep to Dev (with secrets from environment)
+        env:
+          POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+        run: |
+          az group create -n ${{ env.RESOURCE_GROUP }} -l ${{ env.LOCATION }} || true
+          az deployment group create -g ${{ env.RESOURCE_GROUP }} \
+            --template-file ./bicep/main.bicep \
+            --parameters @bicep/params/env.dev.parameters.json \
+            --parameters postgresAdminPassword=$POSTGRES_ADMIN_PASSWORD
+
+      - name: Update Container App image
+        run: |
+          IMAGE_TAG=${{ needs.build.outputs.image-tag }}
+          az containerapp update --name ecauth-dev-auth-app --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_IMAGE }}:${IMAGE_TAG}

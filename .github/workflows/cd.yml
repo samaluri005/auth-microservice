@@ -1,0 +1,49 @@
+name: CD - Promote image (SIT/UAT/PreProd/Prod)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        required: true
+        description: 'Image tag (commit SHA) to promote'
+      target_env:
+        required: true
+        description: 'Target environment (sit|uat|preprod|prod)'
+
+env:
+  ACR_IMAGE: ${{ secrets.ACR_IMAGE }}
+  AZURE_APP_CLIENT_ID: ${{ secrets.AZURE_APP_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_env }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_APP_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+          oidc: true
+
+      - name: Deploy Bicep for target env
+        env:
+          POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+        run: |
+          PARAM_FILE="./bicep/params/env.${{ inputs.target_env }}.parameters.json"
+          az deployment group create -g ${{ secrets[format('RESOURCE_GROUP_{0}', inputs.target_env | upper)] }} \
+            --template-file ./bicep/main.bicep \
+            --parameters @$PARAM_FILE \
+            --parameters postgresAdminPassword=$POSTGRES_ADMIN_PASSWORD
+
+      - name: Update container app image to promoted tag
+        run: |
+          az containerapp update --name ecauth-${{ inputs.target_env }}-auth-app \
+            --resource-group ${{ secrets[format('RESOURCE_GROUP_{0}', inputs.target_env | upper)] }} \
+            --image ${{ env.ACR_IMAGE }}:${{ inputs.image_tag }}
