@@ -20,6 +20,9 @@ jobs:
   promote:
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_env }}
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,21 +36,28 @@ jobs:
           oidc: true
 
       - name: Deploy Bicep for target env
-        env:
-          POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+        # POSTGRES_ADMIN_PASSWORD should be stored as an Environment secret for each target env.
         run: |
           PARAM_FILE="./bicep/params/env.${{ inputs.target_env }}.parameters.json"
+          # Resolve resource group name from a repo secret whose name is RESOURCE_GROUP_<ENV>
+          RG_SECRET_NAME=$(echo "RESOURCE_GROUP_${{ inputs.target_env }}" | tr '[:lower:]' '[:upper:]')
+          # GitHub does not allow variable secrets lookup at runtime in bash; use expression:
+      - name: Deploy Bicep (correct resource group lookup)
+        run: |
+          PARAM_FILE="./bicep/params/env.${{ inputs.target_env }}.parameters.json"
+          # Use GitHub expression to lookup secret: RESOURCE_GROUP_<ENV in upper>
+          RG="${{ secrets[format('RESOURCE_GROUP_{0}', toUpper(inputs.target_env))] }}"
           az deployment group create \
-            -g ${{ secrets[format('RESOURCE_GROUP_{0}', inputs.target_env | upper)] }} \
+            -g "$RG" \
             --template-file ./bicep/main.bicep \
-            --parameters @$PARAM_FILE \
-            --parameters postgresAdminPassword=$POSTGRES_ADMIN_PASSWORD
+            --parameters @"$PARAM_FILE" \
+            --parameters postgresAdminPassword="${{ secrets.POSTGRES_ADMIN_PASSWORD }}"
 
       - name: Update container app image to promoted tag
-        env:
-          RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
         run: |
+          # container app name convention: ecauth-<env>-auth-app
+          TARGET_RG="${{ secrets[format('RESOURCE_GROUP_{0}', toUpper(inputs.target_env))] }}"
           az containerapp update \
             --name ecauth-${{ inputs.target_env }}-auth-app \
-            --resource-group $RESOURCE_GROUP \
+            --resource-group "$TARGET_RG" \
             --image ${{ env.ACR_IMAGE }}:${{ inputs.image_tag }}

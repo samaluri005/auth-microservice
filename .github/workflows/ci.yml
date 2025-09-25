@@ -15,6 +15,9 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write               # required for OIDC
     outputs:
       image-tag: ${{ steps.set-tag.outputs.IMAGE_TAG }}
     steps:
@@ -60,6 +63,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: dev
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -72,14 +78,13 @@ jobs:
           oidc: true
 
       - name: Deploy Bicep to Dev (with secrets from environment)
-        env:
-          POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+        # POSTGRES_ADMIN_PASSWORD should be an Environment secret for 'dev'
         run: |
           az group create -n ${{ env.RESOURCE_GROUP }} -l ${{ env.LOCATION }} || true
           az deployment group create -g ${{ env.RESOURCE_GROUP }} \
             --template-file ./bicep/main.bicep \
             --parameters @bicep/params/env.dev.parameters.json \
-            --parameters postgresAdminPassword=$POSTGRES_ADMIN_PASSWORD
+            --parameters postgresAdminPassword="${{ secrets.POSTGRES_ADMIN_PASSWORD }}"
 
       - name: Update Container App image
         run: |
